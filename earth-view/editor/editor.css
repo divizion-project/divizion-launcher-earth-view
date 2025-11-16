@@ -23,7 +23,7 @@ body {
 
 #viewport {
   position: relative;
-  background: radial-gradient(circle at 25% 25%, rgba(23, 41, 94, 0.7), #030610 70%);
+  background-color: #000;
   overflow: hidden;
   min-height: 100vh;
 }
