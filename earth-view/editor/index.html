@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="fr" data-site-base="divizion-launcher-earth-view">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Earth View Editor</title>
+    <link rel="stylesheet" href="./editor.css">
+  </head>
+  <body>
+    <div class="layout">
+      <div id="viewport" role="presentation"></div>
+      <aside class="panel">
+        <header>
+          <p class="eyebrow">earth-view/editor</p>
+          <h1>Choisis ta caméra</h1>
+          <p class="subtitle">
+            Bouge la caméra comme tu veux, ajuste le zoom &amp; le roll,
+            puis copie la route générée pour l'utiliser sur la page principale.
+          </p>
+        </header>
+        <section class="field">
+          <label for="descriptorOutput">URL à coller</label>
+          <div class="copy-row">
+            <input id="descriptorOutput" type="text" spellcheck="false" readonly>
+            <button id="copyDescriptor" type="button">Copier</button>
+          </div>
+          <small>
+            Format : <code>/x0.2y-0.9z3def15-zoom48</code>.
+            Ajoute cette chaîne après <code>/divizion-launcher-earth-view/</code> sur GitHub Pages.
+          </small>
+        </section>
+        <section class="grid">
+          <div class="field">
+            <label for="rollInput">Roll (def)</label>
+            <input id="rollInput" type="range" min="-180" max="180" value="0">
+            <span class="value" id="rollValue">0°</span>
+          </div>
+          <div class="field">
+            <label for="fovInput">Zoom / FOV</label>
+            <input id="fovInput" type="range" min="20" max="85" value="45">
+            <span class="value" id="fovValue">45°</span>
+          </div>
+        </section>
+        <section class="field">
+          <label>Position caméra</label>
+          <div class="coords">
+            <div>
+              <span>X</span>
+              <output id="coordX">0</output>
+            </div>
+            <div>
+              <span>Y</span>
+              <output id="coordY">0</output>
+            </div>
+            <div>
+              <span>Z</span>
+              <output id="coordZ">0</output>
+            </div>
+          </div>
+        </section>
+        <section class="field">
+          <label for="descriptorInput">Charger un code</label>
+          <div class="copy-row">
+            <input id="descriptorInput" type="text" placeholder="x0y0z4def0-zoom45" spellcheck="false">
+            <button id="loadDescriptor" type="button">Appliquer</button>
+          </div>
+          <small>Colle un code existant pour reprendre une caméra sauvegardée.</small>
+        </section>
+      </aside>
+    </div>
+    <script type="module" src="./editor.js"></script>
+  </body>
+</html>
