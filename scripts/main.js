@@ -34,6 +34,7 @@ let cameraTransition = null;
 let statusTimeout = null;
 const cameraTarget = new THREE.Vector3(0, 0, 0);
 const worldUp = new THREE.Vector3(0, 1, 0);
+const sunDirection = new THREE.Vector3();
 const rotationModes = {
   search: { earth: EARTH_ROTATION_SPEED * 3.5, clouds: CLOUD_ROTATION_SPEED * 3 },
   focusing: { earth: EARTH_ROTATION_SPEED * 1.2, clouds: CLOUD_ROTATION_SPEED * 1.6 },
@@ -90,7 +91,7 @@ const sunTarget = new THREE.Object3D();
 sunTarget.position.set(0, 0, 0);
 scene.add(sunTarget);
 
-const sun = new THREE.DirectionalLight(0xfff2d8, 3.6);
+const sun = new THREE.DirectionalLight(0xfff0cf, 4.2);
 sun.position.set(-9, 5, 6.5);
 sun.target = sunTarget;
 sun.castShadow = true;
@@ -106,9 +107,10 @@ scene.add(sun);
 const hemi = new THREE.HemisphereLight(0x2e4a80, 0x050505, 0.35);
 scene.add(hemi);
 
-const rimLight = new THREE.PointLight(0x1b4fff, 0.35);
-rimLight.position.set(2.5, 1.5, -3.5);
+const rimLight = new THREE.PointLight(0x3a63ff, 0.55);
+rimLight.position.set(3.2, 1.8, -3.5);
 scene.add(rimLight);
+sunDirection.copy(sun.position).normalize();
 
 const globeGroup = new THREE.Group();
 scene.add(globeGroup);
@@ -118,47 +120,143 @@ createSearchEffects();
 searchEffects.visible = rotationMode === 'search';
 let earthMesh = null;
 let cloudsMesh = null;
-let atmosphereMesh = null;
 let starParticles = null;
+let markerAnchor = null;
+const markerPulseConfig = { anchor: null, lastEmission: 0, interval: 1500 };
+const markerPulses = [];
+const markerPulseDuration = 1800;
+let nightLightsMaterial = null;
+let nightLightsMesh = null;
 
-function createAtmosphereMaterial() {
+function createStarParticles(count = 1500, radius = 130) {
+  const positions = new Float32Array(count * 3);
+  const colors = new Float32Array(count * 3);
+  for (let i = 0; i < count; i += 1) {
+    const theta = Math.random() * Math.PI * 2;
+    const phi = Math.acos(THREE.MathUtils.randFloatSpread(2));
+    const r = radius + Math.random() * 20;
+    const x = r * Math.sin(phi) * Math.cos(theta);
+    const y = r * Math.cos(phi);
+    const z = r * Math.sin(phi) * Math.sin(theta);
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = y;
+    positions[i * 3 + 2] = z;
+    const hue = 190 + Math.random() * 80;
+    const color = new THREE.Color(`hsl(${hue}, 85%, ${70 + Math.random() * 20}%)`);
+    colors[i * 3] = color.r;
+    colors[i * 3 + 1] = color.g;
+    colors[i * 3 + 2] = color.b;
+  }
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const material = new THREE.PointsMaterial({
+    size: 0.9,
+    sizeAttenuation: true,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.9,
+    depthWrite: false
+  });
+  const points = new THREE.Points(geometry, material);
+  points.renderOrder = -1;
+  return points;
+}
+
+function spawnPulse() {
+  if (!markerPulseConfig.anchor) {
+    return;
+  }
+  const pulseGeo = new THREE.RingGeometry(0.008, 0.014, 48);
+  const pulseMat = new THREE.MeshBasicMaterial({
+    color: 0xadf8cf,
+    transparent: true,
+    opacity: 0.35,
+    side: THREE.DoubleSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const pulseMesh = new THREE.Mesh(pulseGeo, pulseMat);
+  pulseMesh.position.set(0, 0, 0.0025);
+  markerPulseConfig.anchor.add(pulseMesh);
+  markerPulses.push({ mesh: pulseMesh, start: performance.now(), duration: markerPulseDuration });
+}
+
+function resetMarkerEffects() {
+  markerPulses.forEach(pulse => {
+    pulse.mesh.parent?.remove(pulse.mesh);
+  });
+  markerPulses.length = 0;
+  if (markerAnchor) {
+    globeGroup.remove(markerAnchor);
+    markerAnchor = null;
+  }
+  markerPulseConfig.anchor = null;
+}
+
+function updatePulses(now) {
+  if (markerPulseConfig.anchor && now - markerPulseConfig.lastEmission >= markerPulseConfig.interval) {
+    spawnPulse();
+    markerPulseConfig.lastEmission = now;
+  }
+  for (let i = markerPulses.length - 1; i >= 0; i -= 1) {
+    const pulse = markerPulses[i];
+    const elapsed = now - pulse.start;
+    const t = elapsed / pulse.duration;
+    if (t >= 1) {
+      pulse.mesh.parent?.remove(pulse.mesh);
+      markerPulses.splice(i, 1);
+      continue;
+    }
+    const scale = 1 + t * 2.2;
+    pulse.mesh.scale.setScalar(scale);
+    pulse.mesh.material.opacity = 0.35 * (1 - t);
+  }
+}
+
+function createNightLightsMaterial() {
   return new THREE.ShaderMaterial({
     uniforms: {
-      glowColor: { value: new THREE.Color(0x74cfff) },
-      horizonColor: { value: new THREE.Color(0x1892ff) },
-      falloff: { value: 2.8 }
+      map: { value: textures.earthNight },
+      sunDirection: { value: sunDirection.clone() },
+      intensity: { value: 1.5 }
     },
     vertexShader: `
-      varying vec3 vNormal;
-      varying vec3 vWorldPosition;
+      varying vec2 vUv;
+      varying vec3 vWorldNormal;
       void main() {
-        vNormal = normalize(normalMatrix * normal);
+        vUv = uv;
         vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vWorldPosition = worldPosition.xyz;
+        vWorldNormal = normalize(mat3(modelMatrix) * normal);
         gl_Position = projectionMatrix * viewMatrix * worldPosition;
       }
     `,
     fragmentShader: `
-      varying vec3 vNormal;
-      varying vec3 vWorldPosition;
-      uniform vec3 glowColor;
-      uniform vec3 horizonColor;
-      uniform float falloff;
+      varying vec2 vUv;
+      varying vec3 vWorldNormal;
+      uniform sampler2D map;
+      uniform vec3 sunDirection;
+      uniform float intensity;
       void main() {
-        vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-        float fresnel = pow(max(0.0, 1.0 - dot(vNormal, viewDir)), falloff);
-        float horizon = pow(max(0.0, 1.0 - abs(vNormal.y)), 1.6);
-        vec3 color = mix(horizonColor, glowColor, fresnel);
-        float alpha = clamp(fresnel * 1.35 + horizon * 0.25, 0.0, 1.0);
-        gl_FragColor = vec4(color, alpha);
+        float night = clamp(dot(-sunDirection, normalize(vWorldNormal)), 0.0, 1.0);
+        vec3 color = texture2D(map, vUv).rgb * night * intensity;
+        gl_FragColor = vec4(color, night * 0.9);
       }
     `,
-    blending: THREE.AdditiveBlending,
     transparent: true,
+    blending: THREE.AdditiveBlending,
     depthWrite: false,
-    side: THREE.BackSide
+    depthTest: false
   });
 }
+
+function updateSunUniform() {
+  sunDirection.copy(sun.position).normalize();
+  if (nightLightsMaterial) {
+    nightLightsMaterial.uniforms.sunDirection.value.copy(sunDirection);
+  }
+}
+
 function createSearchEffects() {
   const ringCount = 3;
   for (let i = 0; i < ringCount; i += 1) {
@@ -301,6 +399,11 @@ function buildEarth() {
   globeGroup.add(earth);
   earthMesh = earth;
 
+  nightLightsMaterial = createNightLightsMaterial();
+  nightLightsMesh = new THREE.Mesh(geometry.clone(), nightLightsMaterial);
+  nightLightsMesh.renderOrder = 0.8;
+  globeGroup.add(nightLightsMesh);
+
   const cloudsGeo = new THREE.SphereGeometry(EARTH_RADIUS + CLOUD_OFFSET, 192, 192);
   const cloudsMat = new THREE.MeshStandardMaterial({
     map: textures.clouds,
@@ -315,59 +418,25 @@ function buildEarth() {
   globeGroup.add(clouds);
   cloudsMesh = clouds;
 
-  const atmosphereGeo = new THREE.SphereGeometry(EARTH_RADIUS + 0.08, 196, 196);
-  const atmosphereMat = new THREE.ShaderMaterial({
-    uniforms: {
-      glowColor: { value: new THREE.Color(0x82c9ff) },
-      horizonColor: { value: new THREE.Color(0x2ba1ff) },
-      intensity: { value: 1.1 }
-    },
-    vertexShader: `
-      varying vec3 vNormal;
-      varying vec3 vWorldPosition;
-      void main() {
-        vNormal = normalize(normalMatrix * normal);
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
-        vWorldPosition = worldPosition.xyz;
-        gl_Position = projectionMatrix * viewMatrix * worldPosition;
-      }
-    `,
-    fragmentShader: `
-      varying vec3 vNormal;
-      varying vec3 vWorldPosition;
-      uniform vec3 glowColor;
-      uniform vec3 horizonColor;
-      uniform float intensity;
-      void main() {
-        vec3 viewDir = normalize(cameraPosition - vWorldPosition);
-        float fresnel = pow(1.0 - max(dot(viewDir, vNormal), 0.0), 3.0);
-        vec3 color = mix(horizonColor, glowColor, smoothstep(0.0, 1.0, fresnel * 1.2));
-        gl_FragColor = vec4(color, fresnel * intensity);
-      }
-    `,
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    side: THREE.BackSide
-  });
-  const atmosphere = new THREE.Mesh(atmosphereGeo, atmosphereMat);
-  atmosphere.renderOrder = 1;
-  atmosphere.name = 'atmosphere';
-  globeGroup.add(atmosphere);
-  atmosphereMesh = atmosphere;
-
   const starGeo = new THREE.SphereGeometry(140, 64, 64);
   const starMat = new THREE.MeshBasicMaterial({
     map: textures.starfield,
-    side: THREE.BackSide
+    side: THREE.BackSide,
+    color: 0xffffff,
+    transparent: true,
+    opacity: 0.85
   });
   const starMesh = new THREE.Mesh(starGeo, starMat);
   scene.add(starMesh);
+  starParticles = createStarParticles(1600, 125);
+  scene.add(starParticles);
+  updateSunUniform();
 }
 
 function animate() {
   renderer.setAnimationLoop(() => {
     const delta = clock.getDelta();
+    const now = performance.now();
     const speeds = rotationModes[rotationMode] || rotationModes.free;
     if (earthMesh) {
       earthMesh.rotation.y += speeds.earth * delta;
@@ -379,6 +448,10 @@ function animate() {
       searchEffects.rotation.y += delta * 0.45;
       searchEffects.rotation.x += delta * 0.12;
     }
+    if (starParticles) {
+      starParticles.rotation.y += delta * 0.02;
+    }
+    updatePulses(now);
     updateCameraTransition();
     camera.lookAt(cameraTarget);
     renderer.render(scene, camera);
@@ -513,25 +586,35 @@ async function placeUserMarker({ autoFrame = false } = {}) {
     const label = location.source === 'device' ? 'Position détectée' : 'Position approximative';
     showStatus(label, { persist: false });
   }
-  const markerGeometry = new THREE.SphereGeometry(0.018, 16, 16);
-  const markerMaterial = new THREE.MeshBasicMaterial({ color: 0x6aff7f });
-  const marker = new THREE.Mesh(markerGeometry, markerMaterial);
   const locationVector = latLonToVector3(location.lat, location.lon);
-  marker.position.copy(locationVector);
-  globeGroup.add(marker);
-
-  const haloGeometry = new THREE.RingGeometry(0.028, 0.045, 48);
-  const haloMaterial = new THREE.MeshBasicMaterial({
-    color: 0x6aff7f,
-    side: THREE.DoubleSide,
-    transparent: true,
-    opacity: 0.6
-  });
-  const halo = new THREE.Mesh(haloGeometry, haloMaterial);
+  resetMarkerEffects();
   const outward = locationVector.clone().normalize();
-  halo.position.copy(outward.clone().multiplyScalar(EARTH_RADIUS + 0.025));
-  halo.quaternion.setFromUnitVectors(haloReferenceNormal, outward);
-  globeGroup.add(halo);
+  markerAnchor = new THREE.Object3D();
+  markerAnchor.position.copy(locationVector);
+  markerAnchor.quaternion.setFromUnitVectors(haloReferenceNormal, outward);
+  globeGroup.add(markerAnchor);
+
+  const coreGeometry = new THREE.SphereGeometry(0.007, 16, 16);
+  const coreMaterial = new THREE.MeshBasicMaterial({ color: 0xb4f8d2 });
+  const core = new THREE.Mesh(coreGeometry, coreMaterial);
+  core.position.set(0, 0, 0.002);
+  markerAnchor.add(core);
+
+  const outlineGeometry = new THREE.RingGeometry(0.009, 0.015, 48);
+  const outlineMaterial = new THREE.MeshBasicMaterial({
+    color: 0xb4f8d2,
+    transparent: true,
+    opacity: 0.45,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+  const outline = new THREE.Mesh(outlineGeometry, outlineMaterial);
+  outline.position.set(0, 0, 0.0025);
+  markerAnchor.add(outline);
+
+  markerPulseConfig.anchor = markerAnchor;
+  markerPulseConfig.lastEmission = performance.now();
+  spawnPulse();
 
   if (autoFrame) {
     setRotationMode('focusing');
