@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Realistic Earth Viewer</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; }
+        canvas { display: block; }
+        #loading {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-family: sans-serif;
+            font-size: 1.2rem;
+            pointer-events: none;
+            transition: opacity 1s;
+        }
+    </style>
+</head>
+<body>
+    <div id="loading">Initializing System...</div>
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>
