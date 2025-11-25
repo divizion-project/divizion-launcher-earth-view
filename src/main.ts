@@ -6,90 +6,14 @@ import './style.css';
 const CESIUM_TOKEN = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiJhYjNmNjVkMC04YTBhLTRmNWMtODdjMS05NGUxZDI4OGQzM2EiLCJpZCI6MzYzNDE1LCJpYXQiOjE3NjQwMTI3MjN9.u78rjI-bmc4uWEGANSorM9NheilGCPsthv68efxV1MY';
 Cesium.Ion.defaultAccessToken = CESIUM_TOKEN;
 
-// --- Warp Effect (Canvas) ---
-const warpCanvas = document.getElementById('warpCanvas') as HTMLCanvasElement;
+// --- Overlay Setup ---
 const warpOverlay = document.getElementById('warp-overlay') as HTMLDivElement;
-const ctx = warpCanvas.getContext('2d')!;
-
-let width = window.innerWidth;
-let height = window.innerHeight;
-warpCanvas.width = width;
-warpCanvas.height = height;
-
-interface Star {
-  x: number;
-  y: number;
-  z: number;
-  pz: number;
+if (warpOverlay) {
+  warpOverlay.style.background = 'black';
+  warpOverlay.style.opacity = '1';
+  warpOverlay.style.display = 'block';
+  warpOverlay.style.zIndex = '9999'; // Ensure it's on top
 }
-
-const stars: Star[] = [];
-const numStars = 800;
-const speed = 20;
-
-for (let i = 0; i < numStars; i++) {
-  stars.push({
-    x: (Math.random() - 0.5) * width * 2,
-    y: (Math.random() - 0.5) * height * 2,
-    z: Math.random() * width,
-    pz: 0
-  });
-  stars[i].pz = stars[i].z;
-}
-
-let warpId: number;
-
-function drawWarp() {
-  ctx.fillStyle = 'black';
-  ctx.fillRect(0, 0, width, height);
-
-  const cx = width / 2;
-  const cy = height / 2;
-
-  for (let i = 0; i < numStars; i++) {
-    const star = stars[i];
-    star.z -= speed;
-    if (star.z <= 0) {
-      star.z = width;
-      star.x = (Math.random() - 0.5) * width * 2;
-      star.y = (Math.random() - 0.5) * height * 2;
-      star.pz = star.z;
-    }
-
-    const x = (star.x / star.z) * 100 + cx;
-    const y = (star.y / star.z) * 100 + cy;
-
-    // Previous position for trail
-    const px = (star.x / star.pz) * 100 + cx;
-    const py = (star.y / star.pz) * 100 + cy;
-
-    star.pz = star.z;
-
-    // Draw streak
-    const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
-    const alpha = Math.min(1, (dist / (width / 2)) + 0.1);
-
-    ctx.beginPath();
-    ctx.strokeStyle = `rgba(255, 255, 255, ${alpha})`;
-    ctx.lineWidth = (1 - star.z / width) * 3;
-    ctx.moveTo(px, py);
-    ctx.lineTo(x, y);
-    ctx.stroke();
-  }
-
-  warpId = requestAnimationFrame(drawWarp);
-}
-
-window.addEventListener('resize', () => {
-  width = window.innerWidth;
-  height = window.innerHeight;
-  warpCanvas.width = width;
-  warpCanvas.height = height;
-});
-
-// Start Warp
-drawWarp();
-
 
 // --- Cesium Setup ---
 const viewer = new Cesium.Viewer('cesiumContainer', {
@@ -155,164 +79,168 @@ if (baseLayer) {
   baseLayer.brightness = 0.6; // Darker ground
 }
 
-// Cloud system removed
 
-// Initial Camera Position (Very far)
+
+// Random Initial Position
+const initialLon = Math.random() * 360 - 180;
+const initialLat = Math.random() * 180 - 90;
+
+// Initial Camera Position (2,000,000 km)
 viewer.camera.setView({
-  destination: Cesium.Cartesian3.fromDegrees(0, 0, 1000000000), // 1,000,000 km start
+  destination: Cesium.Cartesian3.fromDegrees(initialLon, initialLat, 2000000000), // 2 million km
+  orientation: {
+    heading: 0.0,
+    pitch: Cesium.Math.toRadians(-90.0),
+    roll: 0.0
+  }
 });
-
 
 // --- Sequence Logic ---
 
 async function startSequence() {
-  // 1. Arrival (0s - 5s)
-  // Fly from far to orbit
+  // 1. Fade In
+  await new Promise(r => setTimeout(r, 500));
+
+  if (warpOverlay) {
+    warpOverlay.style.transition = 'opacity 3s ease-in-out';
+    warpOverlay.style.opacity = '0';
+    setTimeout(() => { warpOverlay.style.display = 'none'; }, 3000);
+  }
+
+  // 2. Fetch Location
+  const location = await fetchUserLocation() || { lat: 48.8566, lon: 2.3522 };
+
+  // 3. Approach Phase
+  // Fly from 2M km to 20,000 km (Orbit view)
   viewer.camera.flyTo({
-    destination: Cesium.Cartesian3.fromDegrees(0, 20, 20000000), // 20,000 km
-    duration: 5,
+    destination: Cesium.Cartesian3.fromDegrees(initialLon, initialLat, 20000000), // 20,000 km
+    duration: 6.0,
     easingFunction: Cesium.EasingFunction.QUINTIC_OUT,
     complete: () => {
-      // 2. Start Rotation immediately after arrival
-      startRotation();
+      startSpiralZoom(location);
     }
   });
-
-  // Fade out warp at 4s
-  setTimeout(() => {
-    warpOverlay.style.opacity = '0';
-  }, 3000);
-
-  setTimeout(() => {
-    cancelAnimationFrame(warpId);
-    warpOverlay.style.display = 'none';
-  }, 5000);
 }
 
-let rotationListener: (() => void) | null = null;
+function startSpiralZoom(targetLoc: Location) {
+  const startPos = viewer.camera.positionCartographic;
+  const startLon = startPos.longitude;
+  const startLat = startPos.latitude;
+  const startHeight = startPos.height;
+  const startPitch = viewer.camera.pitch;
+  const startHeading = viewer.camera.heading;
 
-function startRotation() {
-  const baseRotationRate = 0.0005; // Base rotation speed
-  let currentRotationRate = baseRotationRate;
-  let userLocation: Location | null = null;
+  // Target: 200km altitude, Tilted North
+  const targetLonRad = Cesium.Math.toRadians(targetLoc.lon);
 
-  // Fetch user location
-  fetchUserLocation().then(location => {
-    userLocation = location || { lat: 48.8566, lon: 2.3522 }; // Paris fallback
+  // Offset target latitude South so looking North centers the target
+  // At 5,000km height, we need a large offset to see the target at -50 deg pitch.
+  // tan(40deg) * 5000km = ~4200km offset = ~38 degrees.
+  const CAMERA_OFFSET_SOUTH = 38.0; // Degrees
+  const targetLatRad = Cesium.Math.toRadians(targetLoc.lat - CAMERA_OFFSET_SOUTH);
 
-    // Wait 5 seconds, then start the scan phase
-    setTimeout(() => {
-      startScanPhase(userLocation!);
-    }, 5000);
-  });
+  const targetHeight = 8000000; // 200 km
+  const targetPitch = Cesium.Math.toRadians(-60); // Tilted view
+  const targetHeading = 0; // North
 
-  const onTick = () => {
-    viewer.camera.rotate(Cesium.Cartesian3.UNIT_Z, currentRotationRate);
-  };
+  // Calculate delta longitude for spiral
+  let deltaLon = targetLonRad - startLon;
 
-  viewer.clock.onTick.addEventListener(onTick);
-  rotationListener = () => viewer.clock.onTick.removeEventListener(onTick);
+  // Normalize to [-2PI, 0] for Left rotation
+  while (deltaLon > 0) deltaLon -= Cesium.Math.TWO_PI;
+  while (deltaLon <= -Cesium.Math.TWO_PI) deltaLon += Cesium.Math.TWO_PI;
 
-  // Function to update rotation speed smoothly
-  (window as any).updateRotationRate = (newRate: number) => {
-    currentRotationRate = newRate;
-  };
-}
+  // Add 1 full rotation for spiral effect
+  deltaLon -= Cesium.Math.TWO_PI;
 
-function startScanPhase(location: Location) {
-  // Acceleration phase: speed up rotation and sun
-  const accelerationDuration = 1500; // 1.5 seconds to accelerate (faster)
-  const scanDuration = 4000; // 4 seconds of fast scanning (longer for effect)
-  const startTime = Date.now();
-  const baseRotationRate = 0.0005;
-  const maxRotationRate = 0.015; // Much faster camera rotation during scan
+  // Shortest path for Heading
+  let deltaHeading = targetHeading - startHeading;
+  while (deltaHeading > Math.PI) deltaHeading -= Cesium.Math.TWO_PI;
+  while (deltaHeading < -Math.PI) deltaHeading += Cesium.Math.TWO_PI;
 
-  // Save original clock multiplier
-  const originalClockMultiplier = viewer.clock.multiplier;
+  const duration = 10.0; // 10 seconds spiral
+  const startTime = performance.now();
 
-  // Acceleration interval
-  const accelerationInterval = setInterval(() => {
-    const elapsed = Date.now() - startTime;
-    const progress = Math.min(elapsed / accelerationDuration, 1);
+  const zoomTick = () => {
+    const now = performance.now();
+    const t = Math.min((now - startTime) / (duration * 1000), 1.0);
 
-    // Smoother acceleration using quintic easing for more natural feel
-    const easedProgress = progress < 0.5
-      ? 16 * progress * progress * progress * progress * progress
-      : 1 - Math.pow(-2 * progress + 2, 5) / 2;
+    // Smooth easing (Start slow, accelerate, slow down)
+    const ease = Cesium.EasingFunction.QUINTIC_IN_OUT(t);
 
-    const newRotationRate = baseRotationRate + (maxRotationRate - baseRotationRate) * easedProgress;
+    const currLon = startLon + deltaLon * ease;
+    const currLat = Cesium.Math.lerp(startLat, targetLatRad, ease);
+    const currHeight = Cesium.Math.lerp(startHeight, targetHeight, ease);
+    const currPitch = Cesium.Math.lerp(startPitch, targetPitch, ease);
+    const currHeading = startHeading + deltaHeading * ease;
 
-    // Update rotation rate
-    if ((window as any).updateRotationRate) {
-      (window as any).updateRotationRate(newRotationRate);
-    }
-
-    // Accelerate sun (time) for scanning effect
-    // Speed up time to make sun spin MUCH faster than camera (at least 50x faster)
-    // Camera max is ~0.015, so sun should be spinning VERY fast
-    const maxTimeMultiplier = 150000; // 150000x faster time = sun spinning 50x faster than camera rotation
-    viewer.clock.multiplier = originalClockMultiplier + maxTimeMultiplier * easedProgress;
-
-    if (progress >= 1) {
-      clearInterval(accelerationInterval);
-
-      // Maintain fast speed for scan duration
-      setTimeout(() => {
-        startZoomAndSlowdown(location, maxRotationRate);
-      }, scanDuration);
-    }
-  }, 16); // ~60fps
-}
-
-function startZoomAndSlowdown(location: Location, currentRotationRate: number) {
-  const slowdownDuration = 5000; // 5 seconds for smoother slowdown
-  const startTime = Date.now();
-
-  // Get current camera orientation to continue from current position
-  const currentHeading = viewer.camera.heading;
-
-  // Start zoom animation - this will make a full orbit to maintain continuity
-  zoomToLocation(location, currentHeading);
-
-  // Smooth slowdown interval
-  const slowdownInterval = setInterval(() => {
-    const elapsed = Date.now() - startTime;
-    const progress = Math.min(elapsed / slowdownDuration, 1);
-
-    // Smoother deceleration using quintic easing for very natural slowdown
-    const easedProgress = progress < 0.5
-      ? 16 * progress * progress * progress * progress * progress
-      : 1 - Math.pow(-2 * progress + 2, 5) / 2;
-
-    const newRotationRate = currentRotationRate * (1 - easedProgress);
-
-    // Update rotation rate
-    if ((window as any).updateRotationRate) {
-      (window as any).updateRotationRate(newRotationRate);
-    }
-
-    // Slow down time back to normal with smoother transition, positioning sun correctly
-    // Use a different easing for time to make sun movement feel more natural
-    const timeEasedProgress = 1 - Math.pow(1 - progress, 4); // Quartic easing for time
-    const currentMultiplier = viewer.clock.multiplier;
-    const targetMultiplier = 1; // Real-time
-    viewer.clock.multiplier = currentMultiplier - (currentMultiplier - targetMultiplier) * timeEasedProgress;
-
-    // At the end, set to real-time
-    if (progress >= 1) {
-      clearInterval(slowdownInterval);
-      viewer.clock.multiplier = 1; // Real-time
-
-      // Stop rotation completely
-      if (rotationListener) {
-        rotationListener();
-        rotationListener = null;
+    viewer.camera.setView({
+      destination: Cesium.Cartesian3.fromRadians(currLon, currLat, currHeight),
+      orientation: {
+        heading: currHeading,
+        pitch: currPitch,
+        roll: 0.0
       }
+    });
 
-      // Reset time to now for correct sun position
-      viewer.clock.currentTime = Cesium.JulianDate.now();
+    // Activate 3D tiles when close
+    if (currHeight < 500000 && googleTileset) {
+      googleTileset.show = true;
     }
-  }, 16); // ~60fps
+
+    if (t >= 1.0) {
+      viewer.clock.onTick.removeEventListener(zoomTick);
+      addLocationMarker(targetLoc);
+    }
+  };
+
+  viewer.clock.onTick.addEventListener(zoomTick);
+}
+
+function addLocationMarker(loc: Location) {
+  // "Apple-style" pulsing effect (3D ripples, no central point)
+  const waveCount = 3;
+  const duration = 3000; // ms
+  const maxRadius = 400000.0; // 400 km
+  const baseColor = Cesium.Color.fromCssColorString('#007AFF'); // Apple Blue
+  const markerStartTime = performance.now();
+
+  for (let i = 0; i < waveCount; i++) {
+    const offset = (duration / waveCount) * i;
+
+    viewer.entities.add({
+      position: Cesium.Cartesian3.fromDegrees(loc.lon, loc.lat),
+      ellipse: {
+        semiMinorAxis: new Cesium.CallbackProperty((_time) => {
+          const now = performance.now();
+          let t = ((now + offset) % duration) / duration;
+          // Ease out for expansion
+          t = 1 - Math.pow(1 - t, 3);
+          return Math.max(1.0, maxRadius * t); // Avoid 0
+        }, false),
+        semiMajorAxis: new Cesium.CallbackProperty((_time) => {
+          const now = performance.now();
+          let t = ((now + offset) % duration) / duration;
+          t = 1 - Math.pow(1 - t, 3);
+          // Ensure strictly greater with a safe margin (100m) to prevent crash
+          return Math.max(1.0, maxRadius * t) + 100.0;
+        }, false),
+        material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty((_time) => {
+          const now = performance.now();
+
+          // Appearance animation: Fade in over 2 seconds
+          const appearanceDuration = 2000;
+          const appearanceProgress = Math.min((now - markerStartTime) / appearanceDuration, 1.0);
+
+          let t = ((now + offset) % duration) / duration;
+          // Fade out: starts at 0.3 (more discrete), goes to 0
+          const alpha = 0.3 * (1.0 - t) * appearanceProgress;
+          return baseColor.withAlpha(alpha);
+        }, false)),
+        heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+      }
+    });
+  }
 }
 
 interface Location {
@@ -332,60 +260,6 @@ async function fetchUserLocation(): Promise<Location | null> {
     console.error("Failed to fetch location", e);
     return null;
   }
-}
-
-function zoomToLocation(loc: Location, heading?: number) {
-  // Don't stop rotation here - it will be stopped by the slowdown function
-  // The rotation will smoothly decrease to zero during the zoom
-
-  // Monitor camera height to show 3D tiles only when close enough (1,000,000m)
-  // This preserves the "Black Marble" night lights from space
-  const tileActivationHeight = 100000;
-  const checkHeight = () => {
-    // Ensure we are using the latest height
-    const height = viewer.camera.positionCartographic.height;
-    if (height < tileActivationHeight) {
-      if (googleTileset) {
-        googleTileset.show = true;
-      }
-      viewer.clock.onTick.removeEventListener(checkHeight);
-    }
-  };
-  viewer.clock.onTick.addEventListener(checkHeight);
-
-  // Simplified location marker - single pulse point fixed to ground
-  const locationEntity = viewer.entities.add({
-    position: Cesium.Cartesian3.fromDegrees(loc.lon, loc.lat, 0),
-    point: {
-      pixelSize: 12,
-      color: Cesium.Color.fromCssColorString('#007AFF'),
-      outlineColor: Cesium.Color.WHITE,
-      outlineWidth: 3,
-      heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, // Fixed to ground inclination
-      disableDepthTestDistance: Number.POSITIVE_INFINITY
-    },
-    // Add a subtle pulsing animation
-    ellipse: {
-      semiMinorAxis: 50,
-      semiMajorAxis: 50,
-      material: Cesium.Color.fromCssColorString('#007AFF').withAlpha(0.2),
-      heightReference: Cesium.HeightReference.CLAMP_TO_GROUND, // Also fixed to ground
-      outline: false
-    }
-  });
-
-  // Use provided heading or default to 0, maintain smooth transition
-  const finalHeading = heading !== undefined ? heading : 0.0;
-
-  // Fly to Entity with HeadingPitchRange - using current heading for smooth transition
-  viewer.flyTo(locationEntity, {
-    duration: 5,
-    offset: new Cesium.HeadingPitchRange(
-      finalHeading, // Use current heading for continuous rotation
-      Cesium.Math.toRadians(-30.0),
-      10000000 // 50000km range (kept user's edit)
-    )
-  });
 }
 
 // Start
