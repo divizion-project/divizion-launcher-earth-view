@@ -27,12 +27,7 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Fix Cesium paths
-        run: |
-          if [ -d "dist/earth-view/cesium" ]; then
-            mv dist/earth-view/cesium dist/cesium
-            rm -rf dist/earth-view
-          fi
+
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
