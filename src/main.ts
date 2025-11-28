@@ -1,7 +1,4 @@
 import * as Cesium from 'cesium';
-// @ts-ignore
-window.CESIUM_BASE_URL = '/earth-view/cesium/';
-
 import 'cesium/Build/Cesium/Widgets/widgets.css';
 import './style.css';
 
