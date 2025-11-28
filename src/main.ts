@@ -49,6 +49,8 @@ viewer.scene.globe.showGroundAtmosphere = true;
 
 // Add 3D Buildings (Google Photorealistic 3D Tiles)
 let googleTileset: Cesium.Cesium3DTileset | null = null;
+let osmBuildingsTileset: Cesium.Cesium3DTileset | null = null;
+
 try {
   Cesium.createGooglePhotorealistic3DTileset({
     onlyUsingWithGoogleGeocoder: true // Suppress warning as we're not using geocoding
@@ -60,9 +62,19 @@ try {
 } catch (e) {
   console.warn("Google Photorealistic 3D Tiles not supported or failed, falling back to OSM", e);
   Cesium.createOsmBuildingsAsync().then(buildings => {
+    osmBuildingsTileset = buildings;
     viewer.scene.primitives.add(buildings);
+    buildings.show = false;
   });
 }
+
+// Toggle buildings based on altitude (50km)
+viewer.scene.postRender.addEventListener(() => {
+  const height = viewer.camera.positionCartographic.height;
+  const showBuildings = height < 50000;
+  if (googleTileset) googleTileset.show = showBuildings;
+  if (osmBuildingsTileset) osmBuildingsTileset.show = showBuildings;
+});
 
 // Ensure time is set to now for correct day/night lighting
 viewer.clock.currentTime = Cesium.JulianDate.now();
@@ -81,11 +93,16 @@ if (baseLayer) {
 
 
 
+
 // Random Initial Position
 const initialLon = Math.random() * 360 - 180;
 const initialLat = Math.random() * 180 - 90;
 
+// User Location (Global)
+let userLocation: Location | null = null;
+
 // Initial Camera Position (2,000,000 km)
+
 viewer.camera.setView({
   destination: Cesium.Cartesian3.fromDegrees(initialLon, initialLat, 2000000000), // 2 million km
   orientation: {
@@ -108,16 +125,16 @@ async function startSequence() {
   }
 
   // 2. Fetch Location
-  const location = await fetchUserLocation() || { lat: 48.8566, lon: 2.3522 };
+  userLocation = await fetchUserLocation() || { lat: 48.8566, lon: 2.3522 };
 
   // 3. Approach Phase
   // Fly from 2M km to 20,000 km (Orbit view)
   viewer.camera.flyTo({
     destination: Cesium.Cartesian3.fromDegrees(initialLon, initialLat, 20000000), // 20,000 km
-    duration: 6.0,
+    duration: 10.0,
     easingFunction: Cesium.EasingFunction.QUINTIC_OUT,
     complete: () => {
-      startSpiralZoom(location);
+      if (userLocation) startSpiralZoom(userLocation);
     }
   });
 }
@@ -183,10 +200,7 @@ function startSpiralZoom(targetLoc: Location) {
       }
     });
 
-    // Activate 3D tiles when close
-    if (currHeight < 500000 && googleTileset) {
-      googleTileset.show = true;
-    }
+    // 3D tiles visibility is handled by postRender listener
 
     if (t >= 1.0) {
       viewer.clock.onTick.removeEventListener(zoomTick);
@@ -264,3 +278,112 @@ async function fetchUserLocation(): Promise<Location | null> {
 
 // Start
 startSequence();
+
+// --- Hash Navigation ---
+
+window.addEventListener('hashchange', () => {
+  const hash = window.location.hash;
+  if (hash === '#settings') {
+    animateToSettings();
+  } else if (hash === '#play') {
+    animateToPlay();
+  } else if (hash === '#base') {
+    animateToBase();
+  }
+});
+
+function animateToBase() {
+  // Ensure overlay is hidden
+  if (warpOverlay) {
+    warpOverlay.style.opacity = '0';
+    setTimeout(() => { warpOverlay.style.display = 'none'; }, 500);
+  }
+
+  // Return to the "Spiral Zoom" end state
+  // Target: 8,000km altitude, Tilted North, Offset South
+
+  const targetLoc = userLocation || { lat: 48.8566, lon: 2.3522 }; // Default to Paris if null
+
+  const CAMERA_OFFSET_SOUTH = 38.0; // Degrees
+  const targetLat = targetLoc.lat - CAMERA_OFFSET_SOUTH;
+  const targetLon = targetLoc.lon;
+  const targetHeight = 8000000; // Matches startSpiralZoom target
+
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(
+      targetLon,
+      targetLat,
+      targetHeight
+    ),
+    orientation: {
+      heading: 0.0, // North
+      pitch: Cesium.Math.toRadians(-60.0), // Tilted view
+      roll: 0.0
+    },
+    duration: 2.0,
+    easingFunction: Cesium.EasingFunction.QUINTIC_IN_OUT
+  });
+}
+
+function animateToSettings() {
+  // Ensure overlay is hidden
+  if (warpOverlay) {
+    warpOverlay.style.opacity = '0';
+    setTimeout(() => { warpOverlay.style.display = 'none'; }, 500);
+  }
+
+  // Fly to high altitude
+  // To put Earth on the Left:
+  // 1. Look East (Heading 90)
+  // 2. Look somewhat Down (Pitch -60). Nadir is "Below" view.
+  // 3. Roll -90 deg (CW). "Below" becomes "Left".
+  const currentPos = viewer.camera.positionCartographic;
+
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromRadians(
+      currentPos.longitude,
+      currentPos.latitude,
+      12000000 // 12,000 km viewing distance (Zoomed in)
+    ),
+    orientation: {
+      heading: Cesium.Math.toRadians(90),
+      pitch: Cesium.Math.toRadians(-60),
+      roll: Cesium.Math.toRadians(-90)
+    },
+    duration: 2.0,
+    easingFunction: Cesium.EasingFunction.QUINTIC_IN_OUT
+  });
+}
+
+function animateToPlay() {
+  if (!userLocation) return;
+
+  // 1. Fade to black
+  if (warpOverlay) {
+    warpOverlay.style.display = 'block';
+    warpOverlay.style.opacity = '0'; // Ensure it starts transparent
+
+    // Use setTimeout to allow the browser to register the 'display: block' and 'opacity: 0' state
+    // before applying the transition to 'opacity: 1'.
+    setTimeout(() => {
+      warpOverlay.style.transition = 'opacity 12.0s ease-out'; // Slightly longer/smoother
+      warpOverlay.style.opacity = '1';
+    }, 50);
+  }
+
+  // 2. Cinematic Zoom to Ground
+  viewer.camera.flyTo({
+    destination: Cesium.Cartesian3.fromDegrees(
+      userLocation.lon,
+      userLocation.lat,
+      1000 // 1km altitude (very close)
+    ),
+    orientation: {
+      heading: viewer.camera.heading, // Keep current heading or spin?
+      pitch: Cesium.Math.toRadians(-20), // Look at horizon/ground
+      roll: 0.0
+    },
+    duration: 10.0, // Animation is longer than fade (3.0s)
+    easingFunction: Cesium.EasingFunction.EXPONENTIAL_IN,
+  });
+}
